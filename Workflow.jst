@@ -1,0 +1,694 @@
+
+{% for project in input %}
+
+- name: proteomics_protein_search_{{project.proteomics_projectName}}
+  description: start a search of MS-MS raw file information (on HPC?) 
+
+{% endfor %}
+
+
+
+{% for project in input %}
+
+{% if project.proteomics_updateCCTMSdb=='Y' %}
+
+- name: proteomics_update_database_{{project.proteomics_projectName}}
+  description:  run protScanner to ETL the search result files 
+  after: proteomics_proteome_discoverer_search_{{project.proteomics_projectName}}
+
+{% endif %}
+
+{% endfor %}
+
+
+
+{% for project in input %}
+
+- name: proteomics_directory_setup_{{project.proteomics_projectName}}
+  description: create directories for each project in input.yaml to store temp and result files, store md5 hashes of pipeline scripts
+  cmd: |
+    set -eu
+    set -o pipefail
+    PS4='+\d \t proteomics_directory_setup_{{project.proteomics_projectName}} - '
+    set -x
+    # create directory by project for logs, results, and temp files generated from jetstream pipeline to be copied back to Z drive
+    module load singularity
+    mkdir -p {{project.proteomics_projectName}}/results/
+    mkdir -p {{project.proteomics_projectName}}/logs/ 
+    singularity exec "/home/nhansen/cctms_pipeline.sif" python3 {{ project.proteomics_pipelinePath }}/accessoryScripts/md5_hash.py --outputDirectory {{project.proteomics_projectName}}/logs/ --pipelinePath {{ project.proteomics_pipelinePath }}/
+{% endfor %}
+
+
+
+{% for project in input %}
+{% if project.proteomics_generateQCreport=='Y' %}
+
+- name: proteomics_qc_report_{{project.proteomics_projectName}}
+  description: generate a QC report for each ms-ms file using the MSQCReporter
+  sbatch_args: [--exclusive]
+  after: 
+    - proteomics_update_database_{{project.proteomics_projectName}}
+    - proteomics_directory_setup_{{project.proteomics_projectName}}
+  output: {{project.proteomics_projectName}}/results/{{ project.proteomics_pdResultTXT| basename}}_Summary.pdf
+  cmd: |
+    set -eu
+    set -o pipefail
+    PS4='+\d \t proteomics_qc_report_{{project.proteomics_projectName}} - '
+    set -x
+    set -v
+    CWD=$(pwd)
+    echo "${CWD}"
+    module load singularity
+
+    srun singularity exec "/home/nhansen/cctms_pipeline.sif" Rscript {{ project.proteomics_pipelinePath }}/MSQCDataFormatting.R "{{ project.proteomics_pdResultTXT| basename}}" "${CWD}"/{{project.proteomics_projectName}}/results 2>&1 | tee {{project.proteomics_projectName}}/logs/proteomics_qc_report_{{project.proteomics_projectName}}.log
+
+{% endif %}
+{% endfor %}
+
+
+{% for project in input %}
+
+- name: proteomics_check_input_arguments_{{project.proteomics_projectName}}
+  description: test to ensure each input variable is provided in input.yaml 
+  after: proteomics_directory_setup_{{project.proteomics_projectName}}
+  cmd: |
+    PS4='+\d \t proteomics_check_input_arguments_{{project.proteomics_projectName}} - '
+    set -x
+    set -v
+    set -eu
+    set -o pipefail
+    module load singularity
+
+    singularity exec "/home/nhansen/cctms_pipeline.sif" Rscript {{ project.proteomics_pipelinePath }}/00_checkInputArguments.R --projectName "{{project.proteomics_projectName}}" --isPhospho "{{project.proteomics_isPhospho}}" --idDatabase "{{project.proteomics_idDatabase}}" --isTMT "{{project.proteomics_isTMT}}" --searchEngine "{{project.proteomics_searchEngine}}" --peptidesTXT "{{project.proteomics_peptidesTXT}}"  --proteinsTXT "{{ project.proteomics_proteinsTXT}}" --pdResultTXT "{{project.proteomics_pdResultTXT}}" --pepPivotFILE "{{project.proteomics_pepPivotFILE}}" --pepNormalFILE "{{project.proteomics_pepNormalFILE}}" --protPivotFILE "{{project.proteomics_protPivotFILE}}" --protNormalFILE "{{project.proteomics_protNormalFILE}}" --ptmPivotFILE "{{project.proteomics_ptmPivotFILE}}" --generateQCreport "{{project.proteomics_generateQCreport}}" --plotFigures "{{project.proteomics_plotFigures}}" --headerKeyFILE "{{project.proteomics_headerKeyFILE}}" --headerCols "{{project.proteomics_headerCols}}" --normalize "{{project.proteomics_normalize}}" --normalizationAlgorithm "{{project.proteomics_normalizationAlgorithm}}" --proteogenomicsAnalysis "{{project.proteomics_proteogenomicsAnalysis}}" --PSMs_variantSearch "{{project.proteomics_projectName}}/temp/proteogenomics/{{project.proteomics_PSMs_variantSearch| basename}}" --PSMs_canonicalSearch "{{project.proteomics_projectName}}/temp/proteogenomics/{{project.proteomics_PSMs_canonicalSearch| basename}}"  --proteogenomicsLabelsFile "{{project.proteomics_proteogenomicsLabelsFile}}" --enrichmentPrep "{{project.proteomics_enrichmentPrep}}" --calculateProteinCopies "{{project.proteomics_calculateProteinCopies}}" --differentialExpression "{{project.proteomics_differentialExpression}}" --analyticalGroups "{{project.proteomics_analyticalGroups}}" --molecules "{{project.proteomics_molecules}}" --outputFinalPATH "{{project.proteomics_outputFinalPATH}}" 2>&1 | tee {{project.proteomics_projectName}}/logs/check_input_arguments_{{project.proteomics_projectName}}.log
+{% endfor %}
+
+
+
+{% for project in input %}
+{% if project.proteomics_searchEngine=='ProteomeDiscoverer' %}
+
+- name: proteomics_copy_pep_prot_{{project.proteomics_projectName}}
+  description: Copies input files for the project temporary directory
+  cpus: 6
+  sbatch_args: ['-p', 'isilon']
+  after: proteomics_check_input_arguments_{{project.proteomics_projectName}}
+  cmd: |
+    PS4='+\d \t proteomics_proteomics_copy_pep_prot_{{project.proteomics_projectName}} - '
+    set -x
+    set -eu
+    set -o pipefail
+
+    mkdir -p {{project.proteomics_projectName}}/temp/peptides_proteins/
+    
+    rsync "{{ project.proteomics_peptidesTXT}}" {{project.proteomics_projectName}}/temp/peptides_proteins/ --protect-args 2>&1 | tee {{project.proteomics_projectName}}/logs/copy_pep_prot_{{project.proteomics_projectName}}.log
+
+    rsync "{{ project.proteomics_proteinsTXT}}" {{project.proteomics_projectName}}/temp/peptides_proteins/ --protect-args 2>&1 | tee {{project.proteomics_projectName}}/logs/copy_pep_prot_{{project.proteomics_projectName}}.log
+
+
+{% elif project.proteomics_searchEngine=='Spectronaut' %}
+
+- name: proteomics_copy_pep_prot_{{project.proteomics_projectName}}
+  description: Copies input files for the project temporary directory
+  cpus: 6
+  sbatch_args: ['-p', 'isilon']
+  after: proteomics_check_input_arguments_{{project.proteomics_projectName}}
+  cmd: |
+    PS4='+\d \t proteomics_proteomics_copy_pep_prot_{{project.proteomics_projectName}} - '
+    set -x
+    set -eu
+    set -o pipefail
+
+    mkdir -p {{project.proteomics_projectName}}/temp/peptides_proteins/
+    
+    rsync "{{ project.proteomics_pepPivotFILE}}" {{project.proteomics_projectName}}/temp/peptides_proteins/ --protect-args 2>&1 | tee {{project.proteomics_projectName}}/logs/copy_pep_prot_{{project.proteomics_projectName}}.log
+
+    rsync "{{ project.proteomics_pepNormalFILE}}" {{project.proteomics_projectName}}/temp/peptides_proteins/ --protect-args 2>&1 | tee {{project.proteomics_projectName}}/logs/copy_pep_prot_{{project.proteomics_projectName}}.log
+
+    rsync "{{ project.proteomics_protPivotFILE}}" {{project.proteomics_projectName}}/temp/peptides_proteins/ --protect-args 2>&1 | tee {{project.proteomics_projectName}}/logs/copy_pep_prot_{{project.proteomics_projectName}}.log
+
+    rsync "{{ project.proteomics_protNormalFILE}}" {{project.proteomics_projectName}}/temp/peptides_proteins/ --protect-args 2>&1 | tee {{project.proteomics_projectName}}/logs/copy_pep_prot_{{project.proteomics_projectName}}.log
+
+    {% if project.proteomics_isPhospho == 'Y' %}
+    rsync "{{ project.proteomics_ptmPivotFILE}}" {{project.proteomics_projectName}}/temp/peptides_proteins/ --protect-args 2>&1 | tee {{project.proteomics_projectName}}/logs/copy_pep_prot_{{project.proteomics_projectName}}.log
+    rsync "{{ project.proteomics_ptmNormalFILE}}" {{project.proteomics_projectName}}/temp/peptides_proteins/ --protect-args 2>&1 | tee {{project.proteomics_projectName}}/logs/copy_pep_prot_{{project.proteomics_projectName}}.log
+    {% endif %}
+
+{% endif %}
+{% endfor %}
+
+
+
+{% for project in input %}
+{% if project.proteomics_searchEngine=='ProteomeDiscoverer' %}
+
+
+- name: proteomics_setup_qc_{{project.proteomics_projectName}}
+  description: test to ensure each file exists at the provided path in the input variable provided in input.yaml within the config folder
+  after: proteomics_copy_pep_prot_{{project.proteomics_projectName}}
+  cmd: |
+    PS4='+\d \t proteomics_setup_qc_{{project.proteomics_projectName}} - '
+    set -x
+    set -eu
+    set -o pipefail
+    if [ -f "{{project.proteomics_projectName}}/temp/peptides_proteins/{{ project.proteomics_peptidesTXT| basename}}"  ]; then echo ""{{project.proteomics_projectName}}/temp/peptides_proteins/{{ project.proteomics_peptidesTXT| basename}}" exists";else echo ""{{project.proteomics_projectName}}/temp/peptides_proteins/{{ project.proteomics_peptidesTXT| basename}}" does not exist"; fi 2>&1 | tee {{project.proteomics_projectName}}/logs/setup_qc_{{project.proteomics_projectName}}.log
+    if [ -f "{{project.proteomics_projectName}}/temp/peptides_proteins/{{ project.proteomics_proteinsTXT| basename}}"  ]; then echo ""temp/peptides_proteins/{{ project.proteomics_proteinsTXT| basename}}" exists";else echo ""{{project.proteomics_projectName}}/temp/peptides_proteins/{{ project.proteomics_proteinsTXT| basename}}" does not exist"; fi 2>&1 | tee {{project.proteomics_projectName}}/logs/setup_qc_{{project.proteomics_projectName}}.log
+
+{% elif project.proteomics_searchEngine=='Spectronaut' %}
+
+- name: proteomics_setup_qc_{{project.proteomics_projectName}}
+  description: test to ensure each file exists at the provided path in the input variable provided in input.yaml within the config folder
+  after: proteomics_copy_pep_prot_{{project.proteomics_projectName}}
+  cmd: |
+    PS4='+\d \t proteomics_setup_qc_{{project.proteomics_projectName}} - '
+    set -x
+    set -eu
+    set -o pipefail
+    if [ -f "{{project.proteomics_projectName}}/temp/peptides_proteins/{{ project.proteomics_pepPivotFILE| basename}}"  ]; then echo ""{{project.proteomics_projectName}}/temp/peptides_proteins/{{ project.proteomics_pepPivotFILE| basename}}" exists";else echo ""{{project.proteomics_projectName}}/temp/peptides_proteins/{{ project.proteomics_pepPivotFILE| basename}}" does not exist"; fi 2>&1 | tee {{project.proteomics_projectName}}/logs/setup_qc_{{project.proteomics_projectName}}.log
+    if [ -f "{{project.proteomics_projectName}}/temp/peptides_proteins/{{ project.proteomics_pepNormalFILE| basename}}"  ]; then echo ""{{project.proteomics_projectName}}/temp/peptides_proteins/{{ project.proteomics_pepNormalFILE| basename}}" exists";else echo ""{{project.proteomics_projectName}}/temp/peptides_proteins/{{ project.proteomics_pepNormalFILE| basename}}" does not exist"; fi 2>&1 | tee {{project.proteomics_projectName}}/logs/setup_qc_{{project.proteomics_projectName}}.log
+    if [ -f "{{project.proteomics_projectName}}/temp/peptides_proteins/{{ project.proteomics_protPivotFILE| basename}}"  ]; then echo ""{{project.proteomics_projectName}}/temp/peptides_proteins/{{ project.proteomics_protPivotFILE| basename}}" exists";else echo ""{{project.proteomics_projectName}}/temp/peptides_proteins/{{ project.proteomics_protPivotFILE| basename}}" does not exist"; fi 2>&1 | tee {{project.proteomics_projectName}}/logs/setup_qc_{{project.proteomics_projectName}}.log
+    if [ -f "{{project.proteomics_projectName}}/temp/peptides_proteins/{{ project.proteomics_protNormalFILE| basename}}"  ]; then echo ""{{project.proteomics_projectName}}/temp/peptides_proteins/{{ project.proteomics_protNormalFILE| basename}}" exists";else echo ""{{project.proteomics_projectName}}/temp/peptides_proteins/{{ project.proteomics_protNormalFILE| basename}}" does not exist"; fi 2>&1 | tee {{project.proteomics_projectName}}/logs/setup_qc_{{project.proteomics_projectName}}.log
+
+
+{% endif %}
+{% endfor %}
+
+
+
+{% for project in input %}
+{% if project.proteomics_peptide_confidence_filter=='Y' %}
+{% if project.proteomics_searchEngine=='ProteomeDiscoverer' %}
+
+- name: proteomics_report_summary_{{project.proteomics_projectName}}
+  description: filter peptide, filter column, and calculate peptide length;  generate a summary of the peptide and protein data processed
+  after: 
+    - proteomics_copy_pep_prot_{{project.proteomics_projectName}}
+  input:
+    - {{project.proteomics_projectName}}/temp/peptides_proteins/{{ project.proteomics_peptidesTXT| basename}}
+    - {{project.proteomics_projectName}}/temp/peptides_proteins/{{ project.proteomics_proteinsTXT| basename}}
+  output: 
+    - {{project.proteomics_projectName}}/results/peps_filtered.txt
+    - {{project.proteomics_projectName}}/results/prots_filtered.txt
+    - {{project.proteomics_projectName}}/results/summary.txt
+  cmd: |
+    PS4='+\d \t proteomics_report_summary_{{project.proteomics_projectName}} - '
+    set -x
+    set -v
+    set -eu
+    set -o pipefail
+    module load singularity
+
+    singularity exec "/home/nhansen/cctms_pipeline.sif" Rscript <(echo 'installed.packages()[,1:2]')
+    singularity exec "/home/nhansen/cctms_pipeline.sif" Rscript {{ project.proteomics_pipelinePath }}/01_ReportSummary_PD.R --isPhospho "{{project.proteomics_isPhospho}}" --peptidesTXT "{{project.proteomics_projectName}}/temp/peptides_proteins/{{ project.proteomics_peptidesTXT| basename}}"  --proteinsTXT "{{project.proteomics_projectName}}/temp/peptides_proteins/{{ project.proteomics_proteinsTXT| basename}}" --peptideConfFilter "{{project.proteomics_peptide_confidence_filter}}" --outputPATH "{{project.proteomics_projectName}}/results/" 2>&1 | tee {{project.proteomics_projectName}}/logs/report_summary_{{project.proteomics_projectName}}.log
+
+
+{% elif project.proteomics_searchEngine=='Spectronaut' %}
+
+- name: proteomics_report_summary_{{project.proteomics_projectName}}
+  description: filter peptide, filter column, and calculate peptide length;  generate a summary of the peptide and protein data processed
+  cpus: 39
+  after: 
+    - proteomics_copy_pep_prot_{{project.proteomics_projectName}}
+  input:
+    - {{project.proteomics_projectName}}/temp/peptides_proteins/{{ project.proteomics_pepPivotFILE| basename}}
+    - {{project.proteomics_projectName}}/temp/peptides_proteins/{{ project.proteomics_pepNormalFILE| basename}}
+    - {{project.proteomics_projectName}}/temp/peptides_proteins/{{ project.proteomics_protPivotFILE| basename}}
+    - {{project.proteomics_projectName}}/temp/peptides_proteins/{{ project.proteomics_protNormalFILE| basename}}
+    - {{project.proteomics_projectName}}/temp/peptides_proteins/{{ project.proteomics_ptmPivotFILE| basename}}
+    - {{project.proteomics_projectName}}/temp/peptides_proteins/{{ project.proteomics_ptmNormalFILE| basename}}
+  output: 
+    - {{project.proteomics_projectName}}/results/peps_filtered.txt
+    - {{project.proteomics_projectName}}/results/prots_filtered.txt
+    - {{project.proteomics_projectName}}/results/ptms_filtered.txt
+    - {{project.proteomics_projectName}}/results/summary.txt
+  cmd: |
+    PS4='+\d \t proteomics_report_summary_{{project.proteomics_projectName}} - '
+    set -x
+    set -v
+    set -eu
+    set -o pipefail
+    module load singularity
+    singularity exec "/home/nhansen/cctms_pipeline.sif" Rscript <(echo 'installed.packages()[,1:2]')
+    singularity exec "/home/nhansen/cctms_pipeline.sif" Rscript {{ project.proteomics_pipelinePath }}/01_ReportSummary_Spectronaut.R --isPhospho "{{project.proteomics_isPhospho}}" --pepPivotFILE "{{project.proteomics_projectName}}/temp/peptides_proteins/{{ project.proteomics_pepPivotFILE| basename}}"  --pepNormalFILE "{{project.proteomics_projectName}}/temp/peptides_proteins/{{ project.proteomics_pepNormalFILE| basename}}" --protPivotFILE "{{project.proteomics_projectName}}/temp/peptides_proteins/{{ project.proteomics_protPivotFILE | basename}}"  --protNormalFILE "{{project.proteomics_projectName}}/temp/peptides_proteins/{{ project.proteomics_protNormalFILE | basename}}" --ptmPivotFILE "{{project.proteomics_projectName}}/temp/peptides_proteins/{{ project.proteomics_ptmPivotFILE | basename}}" --ptmNormalFILE "{{project.proteomics_projectName}}/temp/peptides_proteins/{{ project.proteomics_ptmNormalFILE | basename}}" --peptideConfFilter "{{project.proteomics_peptide_confidence_filter}}" --outputPATH "{{project.proteomics_projectName}}/results/" 2>&1 | tee {{project.proteomics_projectName}}/logs/report_summary_{{project.proteomics_projectName}}.log
+
+
+{% endif %}
+{% else %}
+
+- name: proteomics_report_summary_AllConfidence_{{project.proteomics_projectName}}
+  description: filter peptide, filter column, and calculate peptide length;  generate a summary of the peptide and protein data processed
+  after: 
+    - proteomics_copy_pep_prot_{{project.proteomics_projectName}}
+  input:
+    - {{project.proteomics_projectName}}/temp/peptides_proteins/{{ project.proteomics_peptidesTXT| basename}}
+    - {{project.proteomics_projectName}}/temp/peptides_proteins/{{ project.proteomics_proteinsTXT| basename}}
+  output: 
+    - {{project.proteomics_projectName}}/results/peps_filtered.txt
+    - {{project.proteomics_projectName}}/results/prots_filtered.txt
+    - {{project.proteomics_projectName}}/results/summary.txt
+  cpus: 39
+  mem: 200G
+  cmd: |
+    PS4='+\d \t proteomics_report_summary_AllConfidence_{{project.proteomics_projectName}} - '
+    set -x
+    set -v
+    set -eu
+    set -o pipefail
+    module load singularity
+    singularity exec "/home/nhansen/cctms_pipeline.sif" Rscript <(echo 'installed.packages()[,1:2]')
+    singularity exec "/home/nhansen/cctms_pipeline.sif" Rscript {{ project.proteomics_pipelinePath }}/01_ReportSummary_PD_allConf.R --isPhospho "{{project.proteomics_isPhospho}}" --peptidesTXT "{{project.proteomics_projectName}}/temp/peptides_proteins/{{ project.proteomics_peptidesTXT| basename}}"  --proteinsTXT "{{project.proteomics_projectName}}/temp/peptides_proteins/{{ project.proteomics_proteinsTXT| basename}}" --peptideConfFilter "{{project.proteomics_peptide_confidence_filter}}" --outputPATH "{{project.proteomics_projectName}}/results/" 2>&1 | tee {{project.proteomics_projectName}}/logs/report_summary_AllConfidence_{{project.proteomics_projectName}}.log
+
+    # TODO echo 'Hello' | mail -s 'Test mail from dback' 'bmorris@tgen.org'
+
+
+{% endif %}
+{% endfor %}
+
+
+
+{% for project in input %}
+{% if project.proteomics_calculateProteinCopies=='Y' %}
+
+- name: proteomics_proteinCopyNumber_{{project.proteomics_projectName}}
+  description: calculate the protein nopy number(pCN) to obtain a reference whole body normal (WBN) based on the DNA to histone ratio.
+  cpus: 39
+  input: {{project.proteomics_projectName}}/results/prots_filtered.txt
+  output: {{project.proteomics_projectName}}/results/prots_pCN.txt
+  cmd: |
+    PS4='+\d \t proteomics_proteinCopyNumber_{{project.proteomics_projectName}} - '
+    set -x
+    set -v
+    set -eu
+    set -o pipefail
+    module load singularity
+    singularity exec "/home/nhansen/cctms_pipeline.sif" Rscript {{ project.proteomics_pipelinePath }}/02_ProteinCopies.R --isPhospho "{{project.proteomics_isPhospho}}" --proteinsTXT "{{project.proteomics_projectName}}/results/prots_filtered.txt"  --pepsTXT "{{project.proteomics_projectName}}/results/peps_filtered.txt"  --outputPATH "{{project.proteomics_projectName}}/results/prots_pCN.txt" --enrichmentPrep "{{project.proteomics_enrichmentPrep}}" --calculateProteinCopies "{{project.proteomics_calculateProteinCopies}}" --referenceDataset "{{project.proteomics_referenceDataset}}" --referenceTissueType "{{project.proteomics_referenceTissueType}}" --idDatabase "{{project.proteomics_idDatabase}}" --pipelinePath "{{ project.proteomics_pipelinePath }}" 2>&1 | tee {{project.proteomics_projectName}}/logs/proteinCopyNumber_{{project.proteomics_projectName}}.log
+
+    #cp {{project.proteomics_projectName}}/results/peps_filtered.txt {{project.proteomics_projectName}}/results/peps.txt
+
+{% endif %}
+{% endfor %}
+
+
+
+{% for project in input %}
+{% if project.proteomics_proteogenomicsAnalysis=='Y' %}
+{% if project.proteomics_proteogenomicsLabelsFile!='' %}
+{% if project.proteomics_isTMT=='Y' %}
+
+- name: proteomics_copy_proteogenomics_labels_{{project.proteomics_projectName}}
+  description: copy the proteogenomicsLabelsFile to project temp folder for proteogenomics variant unnormalized_variant_analysis
+  output: {{project.proteomics_projectName}}/temp/proteogenomics/{{project.proteomics_proteogenomicsLabelsFile| basename}}
+  sbatch_args: ['-p', 'isilon']
+  cmd: |
+    PS4='+\d \t proteomics_copy_proteogenomics_labels_{{project.proteomics_projectName}} - '
+    set -x
+    set -eu
+    set -o pipefail
+    # copy input files from project folders on Z drive
+    mkdir -p {{project.proteomics_projectName}}/temp/proteogenomics/
+    
+    rsync "{{ project.proteomics_proteogenomicsLabelsFile}}" {{project.proteomics_projectName}}/temp/proteogenomics/ --protect-args 2>&1 | tee {{project.proteomics_projectName}}/logs/copy_proteogenomics_labels_{{project.proteomics_projectName}}.log
+
+{% endif %}
+{% endif %}
+
+- name: proteomics_copy_PSMfiles_{{project.proteomics_projectName}}
+  description: copy the canonical and variant search PSM files, and canonical search fasta to project temp folder for proteogenomics variant unnormalized_variant_analysis
+  cpus: 6
+  sbatch_args: ['-p', 'isilon'] 
+  cmd: |
+    PS4='+\d \t proteomics_proteomics_copy_PSMfiles_{{project.proteomics_projectName}} - '
+    set -x
+    set -eu
+    set -o pipefail
+    # copy input files from project folders on Z drive
+    mkdir -p {{project.proteomics_projectName}}/temp/proteogenomics/
+
+    rsync "{{ project.proteomics_PSMs_variantSearch}}" {{project.proteomics_projectName}}/temp/proteogenomics/ --protect-args 2>&1 | tee {{project.proteomics_projectName}}/logs/proteomics_copy_PSMfiles_{{project.proteomics_projectName}}.log
+
+    rsync "{{ project.proteomics_canonical_fasta}}" {{project.proteomics_projectName}}/temp/proteogenomics/ --protect-args 2>&1 | tee {{project.proteomics_projectName}}/logs/proteomics_copy_PSMfiles_{{project.proteomics_projectName}}.log
+
+{% endif %} 
+
+
+{% if project.proteomics_PSMs_canonicalSearch!='' %}
+{% if project.proteomics_PSMs_canonicalSearch!='NA' %}
+
+    rsync "{{ project.proteomics_PSMs_canonicalSearch}}" {{project.proteomics_projectName}}/temp/proteogenomics/ --protect-args 2>&1 | tee {{project.proteomics_projectName}}/logs/proteomics_copy_PSMfiles_{{project.proteomics_projectName}}.log
+
+{% endif %}
+{% endif %}
+
+{% endfor %}
+
+
+
+{% for project in input %}
+{% if project.proteomics_calculateProteinCopies=='Y' %}
+
+- name: proteomics_normalize_{{project.proteomics_projectName}}
+  description: if project normalization specifies Y, normalize peptide and protein data
+  after: proteomics_proteinCopyNumber_{{project.proteomics_projectName}}
+  input:
+    - {{project.proteomics_projectName}}/results/peps_filtered.txt
+    - {{project.proteomics_projectName}}/results/prots_pCN.txt
+  output: 
+    - {{project.proteomics_projectName}}/results/peps_normalized.txt
+    - {{project.proteomics_projectName}}/results/prots_normalized.txt
+  cmd: |
+    PS4='+\d \t proteomics_normalize_{{project.proteomics_projectName}} - '
+    set -x
+    set -v
+    set -eu
+    set -o pipefail
+    module load singularity
+    singularity exec "/home/nhansen/cctms_pipeline.sif" Rscript {{ project.proteomics_pipelinePath }}/03_Normalization.R --peptidesTXT {{project.proteomics_projectName}}/results/peps_filtered.txt --proteinsTXT  {{project.proteomics_projectName}}/results/prots_pCN.txt  --outputPATH "{{project.proteomics_projectName}}/results/" --normalize "{{project.proteomics_normalize}}" --normalizationAlgorithm "{{project.proteomics_normalizationAlgorithm }}" --calculateProteinCopies "{{project.proteomics_calculateProteinCopies}}" --kitIDs "{{project.proteomics_kitIDs}}" --normalizationID "{{project.proteomics_normalizationID}}" --pipelinePath "{{ project.proteomics_pipelinePath }}" --plotFigures "{{project.proteomics_plotFigures}}" --headerKeyFILE "{{project.proteomics_headerKeyFILE}}" --headerCols "{{project.proteomics_headerCols}}" 2>&1 | tee {{project.proteomics_projectName}}/logs/normalize_{{project.proteomics_projectName}}.log
+
+
+{% else %}
+
+- name: proteomics_normalize_{{project.proteomics_projectName}}
+  description: if project normalization specifies Y, normalize peptide and protein data
+  input:
+    - {{project.proteomics_projectName}}/results/peps_filtered.txt
+    - {{project.proteomics_projectName}}/results/prots_filtered.txt
+  output:
+    - {{project.proteomics_projectName}}/results/peps_normalized.txt
+    - {{project.proteomics_projectName}}/results/prots_normalized.txt
+  cmd: |
+    PS4='+\d \t proteomics_normalize_{{project.proteomics_projectName}} - '
+    set -x
+    set -v
+    set -eu
+    set -o pipefail
+    module load singularity
+
+    {% if project.proteomics_searchEngine == 'ProteomeDiscoverer' %}
+    singularity exec "/home/nhansen/cctms_pipeline.sif" Rscript {{ project.proteomics_pipelinePath }}/03_Normalization.R --peptidesTXT {{project.proteomics_projectName}}/results/peps_filtered.txt --proteinsTXT  {{project.proteomics_projectName}}/results/prots_filtered.txt  --outputPATH "{{project.proteomics_projectName}}/results/" --normalize "{{project.proteomics_normalize}}" --normalizationAlgorithm "{{project.proteomics_normalizationAlgorithm }}" --calculateProteinCopies "{{project.proteomics_calculateProteinCopies}}" --kitIDs "{{project.proteomics_kitIDs}}" --normalizationID "{{project.proteomics_normalizationID}}" --pipelinePath "{{ project.proteomics_pipelinePath }}" --plotFigures "{{project.proteomics_plotFigures}}" --headerKeyFILE "{{project.proteomics_headerKeyFILE}}" --headerCols "{{project.proteomics_headerCols}}" 2>&1 | tee {{project.proteomics_projectName}}/logs/normalize_{{project.proteomics_projectName}}.log
+
+    {% elif project.proteomics_searchEngine == 'Spectronaut' %}
+      {% if project.proteomics_isPhospho == 'Y' %}
+      singularity exec "/home/nhansen/cctms_pipeline.sif" Rscript {{ project.proteomics_pipelinePath }}/03_Normalization.R --peptidesTXT {{project.proteomics_projectName}}/results/ptms_filtered.txt --proteinsTXT  {{project.proteomics_projectName}}/results/prots_filtered.txt  --outputPATH "{{project.proteomics_projectName}}/results/" --normalize "{{project.proteomics_normalize}}" --normalizationAlgorithm "{{project.proteomics_normalizationAlgorithm }}" --calculateProteinCopies "{{project.proteomics_calculateProteinCopies}}" --kitIDs "{{project.proteomics_kitIDs}}" --normalizationID "{{project.proteomics_normalizationID}}" --pipelinePath "{{ project.proteomics_pipelinePath }}" --plotFigures "{{project.proteomics_plotFigures}}" --headerKeyFILE "{{project.proteomics_headerKeyFILE}}" --headerCols "{{project.proteomics_headerCols}}" 2>&1 | tee {{project.proteomics_projectName}}/logs/normalize_{{project.proteomics_projectName}}.log
+      {% elif project.proteomics_isPhospho == 'N' %}
+      singularity exec "/home/nhansen/cctms_pipeline.sif" Rscript {{ project.proteomics_pipelinePath }}/03_Normalization.R --peptidesTXT {{project.proteomics_projectName}}/results/peps_filtered.txt --proteinsTXT  {{project.proteomics_projectName}}/results/prots_filtered.txt  --outputPATH "{{project.proteomics_projectName}}/results/" --normalize "{{project.proteomics_normalize}}" --normalizationAlgorithm "{{project.proteomics_normalizationAlgorithm }}" --calculateProteinCopies "{{project.proteomics_calculateProteinCopies}}" --kitIDs "{{project.proteomics_kitIDs}}" --normalizationID "{{project.proteomics_normalizationID}}" --pipelinePath "{{ project.proteomics_pipelinePath }}" --plotFigures "{{project.proteomics_plotFigures}}" --headerKeyFILE "{{project.proteomics_headerKeyFILE}}" --headerCols "{{project.proteomics_headerCols}}" 2>&1 | tee {{project.proteomics_projectName}}/logs/normalize_{{project.proteomics_projectName}}.log
+      {% endif %}
+    {% endif %}
+
+{% endif %}
+
+{% if project.proteomics_peptide_confidence_filter=='Y' %}
+- name: proteomics_variant_analysis_{{project.proteomics_projectName}}
+  description: analyze variants with prots output
+  after:
+    - proteomics_normalize_{{project.proteomics_projectName}}
+  input: {{project.proteomics_projectName}}/results/peps_normalized.txt
+  output: {{project.proteomics_projectName}}/results/peps.txt
+  cmd: |
+    PS4='+\d \t proteomics_variant_analysis_{{project.proteomics_projectName}} - '
+    set -x
+    set -v
+    set -eu
+    set -o pipefail
+    module load singularity
+    mkdir -p {{project.proteomics_projectName}}/temp/proteogenomics/
+    singularity exec "/home/nhansen/cctms_pipeline.sif" Rscript {{ project.proteomics_pipelinePath }}/04_VariantAnalysis.R --isPhospho "{{project.proteomics_isPhospho}}" --peptidesTXT {{project.proteomics_projectName}}/results/peps_normalized.txt --outputPATH "{{project.proteomics_projectName}}/results/peps_variants.txt" --proteogenomicsAnalysis "{{project.proteomics_proteogenomicsAnalysis}}" --proteogenomicsTempFolder "{{project.proteomics_projectName}}/temp/proteogenomics/" --PSMs_variantSearch "{{project.proteomics_projectName}}/temp/proteogenomics/{{project.proteomics_PSMs_variantSearch| basename}}" --PSMs_canonicalSearch "{{project.proteomics_projectName}}/temp/proteogenomics/{{project.proteomics_PSMs_canonicalSearch| basename}}" --canonical_fasta "{{project.proteomics_projectName}}/temp/proteogenomics/{{project.proteomics_canonical_fasta| basename}}" --pipelinePath "{{ project.proteomics_pipelinePath }}" 2>&1 | tee {{project.proteomics_projectName}}/logs/variant_analysis_{{project.proteomics_projectName}}.log 
+    singularity exec "/home/nhansen/cctms_pipeline.sif" Rscript {{ project.proteomics_pipelinePath }}/04B_generateVariantJSONinput.R --isPhospho "{{project.proteomics_isPhospho}}" --sampleNames "{{project.proteomics_sampleNames}}" --peptidesTXT {{project.proteomics_projectName}}/temp/peptides_proteins/{{ project.proteomics_peptidesTXT| basename}} --outputPATH "{{project.proteomics_projectName}}/results/peps_variantJSONinput.txt" --proteogenomicsAnalysis "{{project.proteomics_proteogenomicsAnalysis}}" --variantsFile "{{project.proteomics_projectName}}/results/peps.txt" 2>&1 | tee {{project.proteomics_projectName}}/logs/variant_analysis_{{project.proteomics_projectName}}.log 
+   
+{% else %}
+
+- name: proteomics_variant_analysis_{{project.proteomics_projectName}}
+  description: analyze variants with prots output
+  after:
+    - proteomics_normalize_{{project.proteomics_projectName}}
+  input: {{project.proteomics_projectName}}/results/peps_normalized.txt
+  output: {{project.proteomics_projectName}}/results/peps.txt
+  cpus: 39
+  mem: 200G
+  cmd: |
+    PS4='+\d \t proteomics_variant_analysis_{{project.proteomics_projectName}} - '
+    set -x
+    set -v
+    set -eu
+    set -o pipefail
+    module load singularity
+    mkdir -p {{project.proteomics_projectName}}/temp/proteogenomics/
+    singularity exec "/home/nhansen/cctms_pipeline.sif" Rscript {{ project.proteomics_pipelinePath }}/04_VariantAnalysis.R --isPhospho "{{project.proteomics_isPhospho}}" --peptidesTXT {{project.proteomics_projectName}}/results/peps_normalized.txt --outputPATH "{{project.proteomics_projectName}}/results/peps_variants.txt" --proteogenomicsAnalysis "{{project.proteomics_proteogenomicsAnalysis}}" --proteogenomicsTempFolder "{{project.proteomics_projectName}}/temp/proteogenomics/" --PSMs_variantSearch "{{project.proteomics_projectName}}/temp/proteogenomics/{{project.proteomics_PSMs_variantSearch| basename}}" --PSMs_canonicalSearch "{{project.proteomics_projectName}}/temp/proteogenomics/{{project.proteomics_PSMs_canonicalSearch| basename}}" --canonical_fasta "{{project.proteomics_projectName}}/temp/proteogenomics/{{project.proteomics_canonical_fasta| basename}}" --pipelinePath "{{ project.proteomics_pipelinePath }}" 2>&1 | tee {{project.proteomics_projectName}}/logs/variant_analysis_{{project.proteomics_projectName}}.log 
+
+
+{% endif %}
+{% endfor %}
+
+
+
+{% for project in input %}
+{% if project.proteomics_isPhospho=='Y' %}
+
+- name: proteomics_phospho_annotations_{{project.proteomics_projectName}}
+  description: plot and annotate phospho peptide data
+  after: proteomics_variant_analysis_{{project.proteomics_projectName}}
+  before: proteomics_tag_kinases_{{project.proteomics_projectName}}
+  input: 
+    - {{project.proteomics_projectName}}/results/peps_variants.txt
+    - {{project.proteomics_projectName}}/temp/peptides_proteins/{{ project.proteomics_proteinsTXT| basename}}
+  output:
+    - {{project.proteomics_projectName}}/results/peps_phosphoAnnotated.txt
+  cmd: |
+    PS4='+\d \t proteomics_phospho_annotations_{{project.proteomics_projectName}} - '
+    set -x
+    set -v
+    set -eu
+    set -o pipefail
+    module load singularity
+    singularity exec "/home/nhansen/cctms_pipeline.sif" Rscript {{ project.proteomics_pipelinePath }}/05_PhosphoAnnotations.R --peptidesTXT {{project.proteomics_projectName}}/results/peps_variants.txt --proteinsTXT "{{project.proteomics_projectName}}/temp/peptides_proteins/{{ project.proteomics_proteinsTXT| basename}}"  --outputPATH "{{project.proteomics_projectName}}/results/" --isPhospho "{{project.proteomics_isPhospho}}" --normalize "{{project.proteomics_normalize}}"  --organism "{{project.proteomics_organism}}" --idDatabase "{{project.proteomics_idDatabase}}" --searchEngine "{{project.proteomics_searchEngine}}"  2>&1 | tee {{project.proteomics_projectName}}/logs/phospho_annotations_{{project.proteomics_projectName}}.log
+
+
+- name: proteomics_tag_kinases_{{project.proteomics_projectName}}
+  description: plot and annotate kinase data for  proteins and peptides with phospho annotations
+  after: proteomics_phospho_annotations_{{project.proteomics_projectName}}
+  input:
+    - {{project.proteomics_projectName}}/results/peps_phosphoAnnotated.txt
+    - {{project.proteomics_projectName}}/results/prots_normalized.txt
+  output:
+    - {{project.proteomics_projectName}}/results/peps_kinaseAnnotated.txt
+    - {{project.proteomics_projectName}}/results/prots_kinaseAnnotated.txt
+  cmd: |
+    PS4='+\d \t proteomics_tag_kinases{{project.proteomics_projectName}} - '
+    set -x
+    set -v
+    set -eu
+    set -o pipefail
+    module load singularity
+    singularity exec "/home/nhansen/cctms_pipeline.sif" Rscript {{ project.proteomics_pipelinePath }}/06_TagKinases.R --peptidesTXT {{project.proteomics_projectName}}/results/peps_phosphoAnnotated.txt --proteinsTXT  {{project.proteomics_projectName}}/results/prots_normalized.txt  --outputPATH "{{project.proteomics_projectName}}/results/" 2>&1 | tee {{project.proteomics_projectName}}/logs/tag_kinases{{project.proteomics_projectName}}.log
+
+
+- name: proteomics_calc_kinaseActivities_{{project.proteomics_projectName}}
+  description: preps data files and runs IKAP in matlab to calculate kinase activities from phosphosite abundances
+  cpus: 39
+  after: proteomics_tag_kinases_{{project.proteomics_projectName}}
+  input:
+    - {{project.proteomics_projectName}}/results/peps_kinaseAnnotated.txt
+    - {{project.proteomics_projectName}}/results/prots_kinaseAnnotated.txt
+  cmd: |
+    PS4='+\d \t proteomics_calc_kinaseActivities{{project.proteomics_projectName}} - '
+    set -x
+    set -v
+    set -eu
+    set -o pipefail
+    module load singularity
+
+    singularity exec "/home/nhansen/cctms_pipeline.sif" Rscript {{ project.proteomics_pipelinePath }}/07_IKAP_dataPrep.R --peptidesTXT {{project.proteomics_projectName}}/results/peps_kinaseAnnotated.txt --outputPATH "{{project.proteomics_projectName}}/results/" --normalize "{{project.proteomics_normalize}}" 2>&1 | tee {{project.proteomics_projectName}}/logs/proteomics_calc_statistics{{project.proteomics_projectName}}.log
+
+    singularity exec "/home/nhansen/cctms_pipeline.sif" matlab -nojvm -nodisplay -nosplash -r "runIKAP('{{project.proteomics_projectName}}/results/ikap_data.txt', '{{project.proteomics_projectName}}/results/ikap_kproteome.txt', '{{project.proteomics_projectName}}/results/')"
+
+
+{% else %}
+
+- name: proteomics_tag_kinases_{{project.proteomics_projectName}}
+  description: plot and annotate kinase data for  proteins and peptides 
+  after: proteomics_variant_analysis_{{project.proteomics_projectName}}
+  input: 
+    - {{project.proteomics_projectName}}/results/peps_variants.txt
+    - {{project.proteomics_projectName}}/results/prots_normalized.txt
+  output:
+    - {{project.proteomics_projectName}}/results/peps_kinaseAnnotated.txt
+    - {{project.proteomics_projectName}}/results/prots_kinaseAnnotated.txt
+  cmd: |
+    PS4='+\d \t proteomics_tag_kinases{{project.proteomics_projectName}} - '
+    set -x
+    set -v
+    set -eu
+    set -o pipefail
+    module load singularity
+    singularity exec "/home/nhansen/cctms_pipeline.sif" Rscript {{ project.proteomics_pipelinePath }}/06_TagKinases.R --peptidesTXT {{project.proteomics_projectName}}/results/peps_variants.txt --proteinsTXT  {{project.proteomics_projectName}}/results/prots_normalized.txt  --outputPATH "{{project.proteomics_projectName}}/results/" 2>&1 | tee {{project.proteomics_projectName}}/logs/tag_kinases{{project.proteomics_projectName}}.log
+{% endif %}
+{% endfor %}
+
+
+
+{% for project in input %}
+{% if project.proteomics_differentialExpression=='Y' %}
+
+- name: proteomics_calc_statistics_{{project.proteomics_projectName}}
+  description: statistical analyses including log fold changes
+  cpus: 39
+  after: proteomics_tag_kinases_{{project.proteomics_projectName}} 
+  input:
+    - {{project.proteomics_projectName}}/results/peps_kinaseAnnotated.txt
+    - {{project.proteomics_projectName}}/results/prots_kinaseAnnotated.txt
+  cmd: |
+    PS4='+\d \t proteomics_calc_statistics{{project.proteomics_projectName}} - '
+    set -x
+    set -v
+    set -eu
+    set -o pipefail
+    module load singularity
+    singularity exec "/home/nhansen/cctms_pipeline.sif" Rscript {{ project.proteomics_pipelinePath }}/08_CalculateStatistics.R --peptidesTXT {{project.proteomics_projectName}}/results/peps_kinaseAnnotated.txt --proteinsTXT {{project.proteomics_projectName}}/results/prots_kinaseAnnotated.txt  --outputPATH "{{project.proteomics_projectName}}/results/" --calculateProteinCopies "{{project.proteomics_calculateProteinCopies}}" --headerKeyFILE "{{project.proteomics_headerKeyFILE}}" --headerCols "{{project.proteomics_headerCols}}" --normalize "{{project.proteomics_normalize}}" --analyticalGroups "{{project.proteomics_analyticalGroups}}" --molecules "{{project.proteomics_molecules}}" --FCthreshold "{{project.proteomics_FCthreshold}}"  2>&1 | tee {{project.proteomics_projectName}}/logs/proteomics_calc_statistics_{{project.proteomics_projectName}}.log
+
+{% endif %}
+{% endfor %}
+
+{% for project in input %}
+{% if project.proteomics_generateOutputJSONs=='Y' %}
+
+{% if project.proteomics_isPhospho=='Y' %}
+
+- name: proteomics_output_JSON_{{project.proteomics_projectName}}
+  description: generate output JSONs for integrating with GemDb for PMED studies 
+  cpus: 39
+  after:  
+    - proteomics_calc_statistics_{{project.proteomics_projectName}}
+  cmd: |
+    PS4='+\d \t proteomics_output_JSON_{{project.proteomics_projectName}} - '
+    set -x
+    set -v
+    set -eu
+    set -o pipefail
+    module load singularity
+    singularity exec "/home/nhansen/cctms_pipeline.sif" python3 {{ project.proteomics_pipelinePath }}/output_JSON_scripts/output_JSON_phospho.py --analyticalGroups "{{project.proteomics_analyticalGroups}}" --resultsDirectory "{{project.proteomics_projectName}}/results/" --pipelinePath "{{ project.proteomics_pipelinePath }}/" --isPhospho "{{project.proteomics_isPhospho}}" 2>&1 | tee {{project.proteomics_projectName}}/logs/proteomics_output_JSON_phoshopho_{{project.proteomics_projectName}}.log
+
+
+{% elif project.proteomics_differentialExpression=='Y' %}
+
+- name: proteomics_output_JSON_{{project.proteomics_projectName}}
+  description: generate output JSONs for integrating with GemDb for PMED studies 
+  cpus: 39
+  after:  
+    - proteomics_calc_statistics_{{project.proteomics_projectName}}
+  cmd: |
+    PS4='+\d \t proteomics_output_JSON_{{project.proteomics_projectName}} - '
+    set -x
+    set -v
+    set -eu
+    set -o pipefail
+    module load singularity
+    singularity exec "/home/nhansen/cctms_pipeline.sif" python3 {{ project.proteomics_pipelinePath }}/output_JSON_scripts/output_JSON_global.py --analyticalGroups "{{project.proteomics_analyticalGroups}}" --resultsDirectory "{{project.proteomics_projectName}}/results/" --pipelinePath "{{ project.proteomics_pipelinePath }}/" --isPhospho "{{project.proteomics_isPhospho}}" 2>&1 | tee {{project.proteomics_projectName}}/logs/proteomics_output_JSON_global_{{project.proteomics_projectName}}.log
+
+    
+{% elif project.proteomics_proteogenomicsAnalysis=='Y' %}
+
+- name: proteomics_output_JSON_{{project.proteomics_projectName}}
+  description: generate output JSONs for integrating with GemDb for PMED studies 
+  cpus: 39
+  after:  
+    - proteomics_variant_analysis_{{project.proteomics_projectName}}
+  cmd: |
+    PS4='+\d \t proteomics_output_JSON_{{project.proteomics_projectName}} - '
+    set -x
+    set -v
+    set -eu
+    set -o pipefail
+    module load singularity
+    singularity exec "/home/nhansen/cctms_pipeline.sif" if [ -f {{project.proteomics_projectName}}/results/peps_variantJSONinput.txt  ]; then python3 {{ project.proteomics_pipelinePath }}/output_JSON_scripts/output_JSON_variant.py --variantInputFile "{{project.proteomics_projectName}}/results/peps_variantJSONinput.txt" --pipelinePath {{ project.proteomics_pipelinePath }}/ --proteogenomicsAnalysis {{ project.proteomics_proteogenomicsAnalysis }} 2>&1 | tee {{project.proteomics_projectName}}/logs/proteomics_output_JSON_variant_{{project.proteomics_projectName}}.log
+
+{% endif %}
+{% endif %}
+{% endfor %}
+
+
+{% for project in input %}
+{% if project.proteomics_differentialExpression=='Y' %}
+
+- name: proteomics_copy_output_{{project.proteomics_projectName}}
+  description: copy the files generated from data analysis to the final output directory on Isilon
+  sbatch_args: ['-p', 'isilon']
+  after: 
+    - proteomics_calc_statistics_{{project.proteomics_projectName}}
+    #- proteomics_qc_report_{{project.proteomics_projectName}}
+    #- proteomics_variant_analysis_{{project.proteomics_projectName}}
+  cmd: |
+    PS4='+\d \t proteomics_proteomics_copy_output_{{project.proteomics_projectName}} - '
+    set -x
+    set -eu
+    set -o pipefail
+    # copy input files from project folders in home to proper analysis test folder in Isilon (Z drive)   
+    rsync -r -v -W {{project.proteomics_projectName}}/ {{project.proteomics_outputFinalPATH}}/{{project.proteomics_projectName}} --protect-args  2>&1 | tee {{project.proteomics_projectName}}/logs/proteomics_copy_output_{{project.proteomics_projectName}}.log
+    rsync -v -W {{ project.proteomics_pipelinePath }}/workflow.jst {{project.proteomics_outputFinalPATH}}/{{project.proteomics_projectName}} --protect-args  2>&1 | tee {{project.proteomics_projectName}}/logs/proteomics_copy_output_{{project.proteomics_projectName}}.log
+    rsync -v -W Input_params.json {{project.proteomics_outputFinalPATH}}/{{project.proteomics_projectName}} --protect-args  2>&1 | tee {{project.proteomics_projectName}}/logs/proteomics_copy_output_{{project.proteomics_projectName}}.log
+    rsync -r -v -W jetstream/ {{project.proteomics_outputFinalPATH}}/{{project.proteomics_projectName}} --protect-args  2>&1 | tee {{project.proteomics_projectName}}/logs/proteomics_copy_output_{{project.proteomics_projectName}}.log
+    if [-f {{project.proteomics_projectName}}/logs/md_hashes.txt ]; then rsync -v -W {{project.proteomics_projectName}}/logs/md_hashes.txt {{project.proteomics_outputFinalPATH}}/{{project.proteomics_projectName}}/results --protect-args; fi  2>&1 | tee {{project.proteomics_projectName}}/logs/proteomics_copy_output_{{project.proteomics_projectName}}.log
+
+
+{% elif project.proteomics_isPhospho=='Y' %}
+
+- name: proteomics_copy_output_{{project.proteomics_projectName}}
+  description: copy the files generated from data analysis to the final output directory on Isilon
+  sbatch_args: ['-p', 'isilon']
+  after-re: 
+    - proteomics_calc_kinaseActivities_{{project.proteomics_projectName}} 
+    - proteomics_variant_analysis_{{project.proteomics_projectName}}
+  container: "/home/nhansen/cctms_pipeline.sif"
+  cmd: |  
+    PS4='+\d \t proteomics_proteomics_copy_output{{project.proteomics_projectName}} - '
+    set -x
+    set -eu
+    set -o pipefail
+    # copy input files from project folders in home to proper analysis test folder in Isilon (Z drive)
+    rsync -r -v -W {{project.proteomics_projectName}}/ {{project.proteomics_outputFinalPATH}}/{{project.proteomics_projectName}} --protect-args  2>&1 | tee {{project.proteomics_projectName}}/logs/proteomics_copy_output_{{project.proteomics_projectName}}.log
+    rsync -v -W {{ project.proteomics_pipelinePath }}/workflow.jst {{project.proteomics_outputFinalPATH}}/{{project.proteomics_projectName}} --protect-args  2>&1 | tee {{project.proteomics_projectName}}/logs/proteomics_copy_output_{{project.proteomics_projectName}}.log
+    rsync -v -W Input_params.json {{project.proteomics_outputFinalPATH}}/{{project.proteomics_projectName}} --protect-args  2>&1 | tee {{project.proteomics_projectName}}/logs/proteomics_copy_output_{{project.proteomics_projectName}}.log
+    rsync -r -v -W jetstream/ {{project.proteomics_outputFinalPATH}}/{{project.proteomics_projectName}} --protect-args  2>&1 | tee {{project.proteomics_projectName}}/logs/proteomics_copy_output_{{project.proteomics_projectName}}.log
+    if [-f {{project.proteomics_projectName}}/logs/md_hashes.txt ]; then rsync -v -W {{project.proteomics_projectName}}/logs/md_hashes.txt {{project.proteomics_outputFinalPATH}}/{{project.proteomics_projectName}}/results --protect-args; fi  2>&1 | tee {{project.proteomics_projectName}}/logs/proteomics_copy_output_{{project.proteomics_projectName}}.log
+    
+
+
+{% else %}
+
+- name: proteomics_copy_output_{{project.proteomics_projectName}}
+  description: copy the files generated from data analysis to the final output directory on Isilon
+  sbatch_args: ['-p', 'isilon']
+  after-re:
+    - proteomics_tag_kinases_{{project.proteomics_projectName}}
+  cmd: |
+    PS4='+\d \t proteomics_proteomics_copy_output{{project.proteomics_projectName}} - '
+    set -x
+    set -eu
+    set -o pipefail
+    # copy input files from project folders in home to proper analysis test folder in Isilon (Z drive)
+    rsync -r -v -W {{project.proteomics_projectName}}/ {{project.proteomics_outputFinalPATH}}/{{project.proteomics_projectName}} --protect-args  2>&1 | tee {{project.proteomics_projectName}}/logs/proteomics_copy_output_{{project.proteomics_projectName}}.log
+    rsync -v -W {{ project.proteomics_pipelinePath }}/workflow.jst {{project.proteomics_outputFinalPATH}}/{{project.proteomics_projectName}} --protect-args  2>&1 | tee {{project.proteomics_projectName}}/logs/proteomics_copy_output_{{project.proteomics_projectName}}.log
+    rsync -v -W Input_params.json {{project.proteomics_outputFinalPATH}}/{{project.proteomics_projectName}} --protect-args  2>&1 | tee {{project.proteomics_projectName}}/logs/proteomics_copy_output_{{project.proteomics_projectName}}.log
+    rsync -r -v -W jetstream/ {{project.proteomics_outputFinalPATH}}/{{project.proteomics_projectName}} --protect-args  2>&1 | tee {{project.proteomics_projectName}}/logs/proteomics_copy_output_{{project.proteomics_projectName}}.log
+    if [-f {{project.proteomics_projectName}}/logs/md_hashes.txt ]; then rsync -v -W {{project.proteomics_projectName}}/logs/md_hashes.txt {{project.proteomics_outputFinalPATH}}/{{project.proteomics_projectName}}/results --protect-args; fi  2>&1 | tee {{project.proteomics_projectName}}/logs/proteomics_copy_output_{{project.proteomics_projectName}}.log
+
+{% endif %}
+{% endfor %}
+
+{% for project in input %}
+{% if project.proteomics_generateOutputJSONs=='Y' %}
+
+- name: proteomics_copy_JSON_{{project.proteomics_projectName}}
+  description: copy output JSONs to final output directory on Isilon 
+  cpus: 39
+  after:  
+    - proteomics_output_JSON_{{project.proteomics_projectName}}
+  cmd: |
+    PS4='+\d \t proteomics_copy_JSON_{{project.proteomics_projectName}} - '
+    set -x
+    set -v
+    set -eu
+    set -o pipefail
+    rsync -v -W {{project.proteomics_projectName}}/results/*.json {{project.proteomics_outputFinalPATH}}/{{project.proteomics_projectName}}/results --protect-args  2>&1 | tee {{project.proteomics_projectName}}/logs/proteomics_copy_output_{{project.proteomics_projectName}}.log
+ 
+{% endif %}
+{% endfor %}
+
+# TODO add email updates sent to user with echo 'Hello' | mail -s 'Test mail from dback' 'bmorris@tgen.org'

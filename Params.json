@@ -1,0 +1,84 @@
+{
+  "input": [
+  {
+  "proteomics_pipelinePath": "",
+  "proteomics_projectName": "ExampleReport",
+  "proteomics_isPhospho": "N",
+  "proteomics_bloodContam": "N",
+  "proteomics_TEVspike": "Y",
+  "proteomics_idDatabase": "Uniprot",
+  "proteomics_isTMT": "N",
+  "proteomics_isEV":"N",
+  "proteomics_sampleNames":"",
+  
+  "proteomics_searchEngine": "ProteomeDiscoverer",
+  "proteomics_peptidesTXT": "",
+  "proteomics_proteinsTXT": "",
+  "proteomics_pdResultTXT": "",
+  "proteomics_ModSitesTXT": "",
+
+  "proteomics_pepPivotFILE": "",
+  "proteomics_pepNormalFILE": "",
+  "proteomics_protPivotFILE": "",
+  "proteomics_protNormalFILE": "",
+  "proteomics_ptmPivotFILE": "",
+  "proteomics_ptmNormalFILE": "",
+
+  "proteomics_plotFigures": "N",
+  "proteomics_headerKeyFILE": "",
+  "proteomics_headerCols": "",
+
+  "proteomics_normalize": "Y",
+  "proteomics_normalizationAlgorithm": "VSN",
+  "proteomics_normalizationID": "",
+  "proteomics_kitIDs": "",
+  
+  "proteomics_calculateProteinCopies": "N",
+  "proteomics_referenceDataset": "NA",
+  "proteomics_referenceTissueType": "NA",
+  "proteomics_enrichmentPrep": "N",
+  
+  "proteomics_proteogenomicsAnalysis": "N",
+  "proteomics_proteogenomicsLabelsFile": "",
+  "proteomics_PSMs_variantSearch": "",
+  "proteomics_PSMs_canonicalSearch": "NA",
+  "proteomics_canonical_fasta":"",
+  "proteomics_peptide_confidence_filter":"Y",
+
+  "proteomics_differentialExpression": "Y",
+  "proteomics_analyticalGroups": "",
+  "proteomics_comparisons_to_plot": "",
+  "proteomics_FCthreshold": "default",
+  "proteomics_molecules": "proteins",
+  
+  "proteomics_createExcel":"Y",
+  "proteomics_generatereport":"Y",
+  "proteomics_samplesubmission":"",
+  "proteomics_QCcorrelation":"0.98",
+  "proteomics_instrument":"",
+  "proteomics_sow":"",
+  "proteomics_thresh_log2fc":"0",
+  "proteomics_thresh_pval":"0.05",
+  
+  "proteomics_heatmap":"Y",
+  "proteomics_variableNames":"Dose,Group",
+  "proteomics_variable1":"5mg,1mg,Vehicle",
+  "proteomics_variable1color":"#698B69,#C1FFC1,#CCCCCC",
+  "proteomics_variable2": "Test,Control",
+  "proteomics_variable2color": "#00C5CD,#d95f02",
+  "proteomics_variable3": "",
+  "proteomics_variable3color": "",
+  
+  
+  "proteomics_upset":"Y",
+  "proteomics_upsetConditions":"5mg_Test,1mg_Test,Vehicle_Test,Vehicle_Control",
+
+  "proteomics_updateCCTMSdb": "N",
+  "proteomics_generateQCreport": "N",
+  "proteomics_generateOutputJSONs":"N",
+
+  "proteomics_organism": "human",
+  "proteomics_outputFinalPATH": ""
+  }
+  ]
+}
